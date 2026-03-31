@@ -1,0 +1,23 @@
+title: Ben Coremans
+description: "Enterprise PKI & Security — real-world lessons from production deployments"
+baseurl: ""
+url: "https://www.bencoremans.nl"
+author: Ben Coremans
+
+theme: minima
+
+minima:
+  skin: dark
+
+header_pages:
+  - blog/index.md
+
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+
+permalink: /blog/:year/:month/:day/:title/
+
+exclude:
+  - skills/
+  - README.md
