@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔐 SecretBox - Secure Browser Encryption</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 700px;
+            width: 100%;
+            padding: 40px;
+        }
+        
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2.2em;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1em;
+        }
+        
+        .mode-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+        }
+        
+        .mode-btn {
+            flex: 1;
+            padding: 12px;
+            background: #f5f5f5;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.95em;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+        }
+        
+        .mode-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        
+        .mode-btn:hover:not(.active) {
+            border-color: #667eea;
+            color: #667eea;
+        }
+        
+        .mode-panel {
+            display: none;
+        }
+        
+        .mode-panel.active {
+            display: block;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: #333;
+            font-weight: 500;
+            font-size: 0.9em;
+        }
+        
+        label small {
+            color: #999;
+            font-weight: 400;
+        }
+        
+        input[type="text"],
+        input[type="password"],
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1em;
+            font-family: inherit;
+            margin-bottom: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus,
+        input[type="password"]:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        textarea {
+            min-height: 120px;
+            resize: vertical;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 30px;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button.secondary {
+            background: #f5f5f5;
+            color: #667eea;
+            margin-top: 10px;
+        }
+        
+        button.secondary:hover {
+            background: #e8e8e8;
+        }
+        
+        .result {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9ff;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+        }
+        
+        .result.show {
+            display: block;
+        }
+        
+        .result label {
+            color: #667eea;
+        }
+        
+        .result-text {
+            margin-top: 10px;
+            padding: 12px;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            word-break: break-all;
+            color: #333;
+        }
+        
+        .info {
+            background: #f8f9ff;
+            border-left: 4px solid #667eea;
+            padding: 12px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            color: #555;
+        }
+        
+        .error {
+            background: #ffe6e6;
+            border-left: 4px solid #ff4444;
+            padding: 12px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            color: #cc0000;
+            display: none;
+        }
+        
+        .error.show {
+            display: block;
+        }
+        
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            text-align: center;
+            color: #999;
+            font-size: 0.85em;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .tab {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            font-size: 1em;
+            cursor: pointer;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+        
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+            font-weight: 600;
+        }
+        
+        .tab:hover {
+            color: #667eea;
+        }
+        
+        .panel {
+            display: none;
+        }
+        
+        .panel.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 SecretBox</h1>
+        <p class="subtitle">Secure AES-256-GCM encryption in your browser - nothing leaves your device</p>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('encrypt')">🔒 Encrypt</button>
+            <button class="tab" onclick="showTab('decrypt')">🔓 Decrypt</button>
+        </div>
+        
+        <!-- ENCRYPT PANEL -->
+        <div id="encrypt-panel" class="panel active">
+            <div class="mode-selector">
+                <button class="mode-btn active" onclick="switchMode('credential')">
+                    🔑 Credential
+                </button>
+                <button class="mode-btn" onclick="switchMode('freetext')">
+                    📝 Free Text
+                </button>
+            </div>
+            
+            <div class="error" id="encrypt-error"></div>
+            
+            <!-- CREDENTIAL MODE -->
+            <div id="credential-mode" class="mode-panel active">
+                <div class="info">
+                    <strong>Credential mode:</strong> Encrypt usernames and passwords with labels for easy organization.
+                </div>
+                
+                <label>Master Key</label>
+                <input type="password" id="cred-key" placeholder="Your secret master key" autocomplete="off">
+                
+                <label>Label <small>(e.g., github-api, database-prod)</small></label>
+                <input type="text" id="cred-label" placeholder="Credential identifier" autocomplete="off">
+                
+                <label>Username / Email <small>(optional)</small></label>
+                <input type="text" id="cred-username" placeholder="username@example.com" autocomplete="off">
+                
+                <label>Secret <small>(password, API key, token)</small></label>
+                <input type="text" id="cred-secret" placeholder="Your password or secret" autocomplete="off">
+                
+                <button onclick="encryptCredential()">🔒 Encrypt Credential</button>
+            </div>
+            
+            <!-- FREETEXT MODE -->
+            <div id="freetext-mode" class="mode-panel">
+                <div class="info">
+                    <strong>Free text mode:</strong> Encrypt any text, JSON, configurations, or large secrets.
+                </div>
+                
+                <label>Master Key</label>
+                <input type="password" id="free-key" placeholder="Your secret master key" autocomplete="off">
+                
+                <label>Text to Encrypt</label>
+                <textarea id="free-text" placeholder="Paste your secret text, JSON, configuration, etc."></textarea>
+                
+                <button onclick="encryptFreetext()">🔒 Encrypt Text</button>
+            </div>
+            
+            <div class="result" id="encrypt-result">
+                <label>✅ Encrypted Result:</label>
+                <div class="result-text" id="encrypt-output"></div>
+                <button class="secondary" onclick="copyResult('encrypt')">📋 Copy to Clipboard</button>
+            </div>
+        </div>
+        
+        <!-- DECRYPT PANEL -->
+        <div id="decrypt-panel" class="panel">
+            <div class="info">
+                <strong>Decrypt:</strong> Paste your encrypted text and master key to reveal the original content.
+            </div>
+            
+            <div class="error" id="decrypt-error"></div>
+            
+            <label>Master Key</label>
+            <input type="password" id="decrypt-key" placeholder="Your secret master key" autocomplete="off">
+            
+            <label>Encrypted Text</label>
+            <textarea id="decrypt-text" placeholder="Paste the encrypted text here"></textarea>
+            
+            <button onclick="decrypt()">🔓 Decrypt</button>
+            
+            <div class="result" id="decrypt-result">
+                <label>✅ Decrypted Content:</label>
+                <div class="result-text" id="decrypt-output"></div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p><strong>100% Privacy:</strong> All encryption uses Web Crypto API (AES-256-GCM). Nothing is sent to any server.</p>
+            <p style="margin-top: 8px;">Built by <a href="https://github.com/bencoremans" style="color: #667eea; text-decoration: none;">Ben Coremans</a> • Open Source</p>
+        </div>
+    </div>
+    
+    <script>
+        let currentMode = 'credential';
+        
+        function showTab(tab) {
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById(tab + '-panel').classList.add('active');
+            event.target.classList.add('active');
+            hideErrors();
+        }
+        
+        function switchMode(mode) {
+            currentMode = mode;
+            document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.mode-panel').forEach(p => p.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(mode + '-mode').classList.add('active');
+            hideErrors();
+        }
+        
+        function hideErrors() {
+            document.querySelectorAll('.error').forEach(e => e.classList.remove('show'));
+            document.querySelectorAll('.result').forEach(r => r.classList.remove('show'));
+        }
+        
+        function showError(panel, message) {
+            hideErrors();
+            const errorEl = document.getElementById(panel + '-error');
+            errorEl.textContent = '❌ ' + message;
+            errorEl.classList.add('show');
+        }
+        
+        async function deriveKey(password, salt) {
+            const enc = new TextEncoder();
+            const keyMaterial = await crypto.subtle.importKey(
+                'raw',
+                enc.encode(password),
+                'PBKDF2',
+                false,
+                ['deriveBits', 'deriveKey']
+            );
+            
+            return crypto.subtle.deriveKey(
+                {
+                    name: 'PBKDF2',
+                    salt: salt,
+                    iterations: 100000,
+                    hash: 'SHA-256'
+                },
+                keyMaterial,
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['encrypt', 'decrypt']
+            );
+        }
+        
+        async function encryptData(password, plaintext) {
+            const salt = crypto.getRandomValues(new Uint8Array(16));
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const key = await deriveKey(password, salt);
+            
+            const enc = new TextEncoder();
+            const encrypted = await crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv: iv },
+                key,
+                enc.encode(plaintext)
+            );
+            
+            // Combine salt + iv + ciphertext
+            const combined = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
+            combined.set(salt, 0);
+            combined.set(iv, salt.length);
+            combined.set(new Uint8Array(encrypted), salt.length + iv.length);
+            
+            return btoa(String.fromCharCode(...combined));
+        }
+        
+        async function decryptData(password, ciphertext) {
+            const combined = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
+            const salt = combined.slice(0, 16);
+            const iv = combined.slice(16, 28);
+            const encrypted = combined.slice(28);
+            
+            const key = await deriveKey(password, salt);
+            const decrypted = await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: iv },
+                key,
+                encrypted
+            );
+            
+            const dec = new TextDecoder();
+            return dec.decode(decrypted);
+        }
+        
+        async function encryptCredential() {
+            try {
+                const key = document.getElementById('cred-key').value;
+                const label = document.getElementById('cred-label').value;
+                const username = document.getElementById('cred-username').value;
+                const secret = document.getElementById('cred-secret').value;
+                
+                if (!key) return showError('encrypt', 'Master key required');
+                if (!label) return showError('encrypt', 'Label required');
+                if (!secret) return showError('encrypt', 'Secret required');
+                
+                const payload = JSON.stringify({
+                    label: label,
+                    username: username || '',
+                    secret: secret,
+                    created: new Date().toISOString()
+                });
+                
+                const encrypted = await encryptData(key, payload);
+                
+                document.getElementById('encrypt-output').textContent = encrypted;
+                document.getElementById('encrypt-result').classList.add('show');
+                
+            } catch (error) {
+                showError('encrypt', 'Encryption failed: ' + error.message);
+            }
+        }
+        
+        async function encryptFreetext() {
+            try {
+                const key = document.getElementById('free-key').value;
+                const text = document.getElementById('free-text').value;
+                
+                if (!key) return showError('encrypt', 'Master key required');
+                if (!text) return showError('encrypt', 'Text to encrypt required');
+                
+                const encrypted = await encryptData(key, text);
+                
+                document.getElementById('encrypt-output').textContent = encrypted;
+                document.getElementById('encrypt-result').classList.add('show');
+                
+            } catch (error) {
+                showError('encrypt', 'Encryption failed: ' + error.message);
+            }
+        }
+        
+        async function decrypt() {
+            try {
+                const key = document.getElementById('decrypt-key').value;
+                const ciphertext = document.getElementById('decrypt-text').value.trim();
+                
+                if (!key) return showError('decrypt', 'Master key required');
+                if (!ciphertext) return showError('decrypt', 'Encrypted text required');
+                
+                const decrypted = await decryptData(key, ciphertext);
+                
+                // Try to parse as JSON (credential mode)
+                let output = decrypted;
+                try {
+                    const parsed = JSON.parse(decrypted);
+                    if (parsed.label && parsed.secret) {
+                        output = `Label: ${parsed.label}\n`;
+                        if (parsed.username) output += `Username: ${parsed.username}\n`;
+                        output += `Secret: ${parsed.secret}\n`;
+                        if (parsed.created) output += `Created: ${new Date(parsed.created).toLocaleString()}`;
+                    }
+                } catch {
+                    // Not JSON, show as-is
+                }
+                
+                document.getElementById('decrypt-output').textContent = output;
+                document.getElementById('decrypt-result').classList.add('show');
+                
+            } catch (error) {
+                if (error.name === 'OperationError') {
+                    showError('decrypt', 'Wrong master key or corrupted data');
+                } else {
+                    showError('decrypt', 'Decryption failed: ' + error.message);
+                }
+            }
+        }
+        
+        function copyResult(panel) {
+            const output = document.getElementById(panel + '-output').textContent;
+            navigator.clipboard.writeText(output).then(() => {
+                const btn = event.target;
+                const original = btn.textContent;
+                btn.textContent = '✅ Copied!';
+                setTimeout(() => btn.textContent = original, 2000);
+            });
+        }
+        
+        // Enter key support
+        document.querySelectorAll('input').forEach(input => {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    if (currentMode === 'credential') {
+                        encryptCredential();
+                    } else {
+                        encryptFreetext();
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>
