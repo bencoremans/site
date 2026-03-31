@@ -4,7 +4,7 @@ baseurl: ""
 url: "https://www.bencoremans.nl"
 author: Ben Coremans
 
-theme: minima
+remote_theme: jekyll/minima
 
 minima:
   skin: dark
@@ -15,6 +15,7 @@ header_pages:
 plugins:
   - jekyll-feed
   - jekyll-seo-tag
+  - jekyll-remote-theme
 
 permalink: /blog/:year/:month/:day/:title/
 
