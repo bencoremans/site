@@ -1,9 +1,9 @@
 ---
 layout: post
 title: "Hierarchy & Planning: The Decisions That Define Your PKI"
-date: 2026-04-03
+date: 2026-04-08 10:00:00 +0200
 categories: [pki, adcs, security]
-tags: [ADCS, PKI, enterprise, certificate-authority]
+tags: [ADCS, PKI, enterprise, certificate-authority, planning, HSM, constraints]
 author: Ben Coremans
 published: false
 ---
@@ -14,31 +14,124 @@ Planning a PKI is not like planning a file server. Get this wrong and you're stu
 
 This is where you make the calls that will either save you or haunt you.
 
-I've seen environments with single-tier PKI in production. Domain-joined Root CAs issuing certificates directly to users. No offline protection. No separation of duties. I've also seen three-tier hierarchies that added complexity without value, because someone read "defense in depth" and thought more layers equals more security.
+In Part 1 I wrote that I have enough scars from running enterprise PKI to write this series. After 10+ years of running and auditing enterprise PKI, the same three categories of critical mistakes keep showing up, and they all happen before anyone touches a CAPolicy.inf file.
 
-This article covers the decisions you make once. Tier choice. Naming. HSM. Certificate lifetimes. Name Constraints. EKU restrictions. PathLength. These are not configuration you tweak later. You bake them in at install time via CAPolicy.inf, and they stay baked.
+**The organizational failure.** The AD team installed ADCS because someone needed certificates. They had the rights, so they ran the wizard, published a few templates, and moved on. Years later nobody could clearly say who actually owned the PKI. Domain admins had Enterprise Admin rights but lacked deep PKI knowledge. The PKI specialist understood certificates but not the full impact on Active Directory authentication and Group Policy. When a serious misconfiguration surfaced, nobody knew who was responsible or how to assess the impact.
 
-Plan well. Because there's no undo.
+**The security failure.** A standard ADCS installation with default configuration. Someone followed a best-practice guide and published a domain controller certificate template. What nobody noticed: the CA was automatically added to the NTAuth container. Combined with a template that allowed "Supply in the request" and included Client Authentication, any authenticated user could request a certificate with `administrator@domain.local` in the SAN. This is a well-documented escalation path (ESC1). I have seen it live in production environments that had been running for years.
 
-Here is what "no undo" looks like in practice. During a PKI deployment, the team defined a new Certificate Policy OID for the Issuing CA under the organization's PEN. The OID was documented, added to CAPolicy.inf, and the CSR was generated. The Root CA signed the request. Everything looked fine. When they tried to install the signed certificate on the Issuing CA, Active Directory Certificate Services (ADCS) refused. The error: invalid or unrecognized policy. The Issuing CA's policy OID was not present in the Root CA certificate. RFC 5280 is explicit: a child CA can only reference policies that exist in its parent. The fix meant pulling the offline Root CA from the safe, re-issuing its certificate with the correct policy OIDs, re-signing the Issuing CA, and redistributing the new Root to all clients. Because someone did not check the policy hierarchy before writing CAPolicy.inf.
+**The technical failure.** During a deployment, the team defined a new Certificate Policy OID and added it to the Issuing CA's CAPolicy.inf. The Root signed the request. Everything looked fine, until the Issuing CA refused to install the certificate. The error: the policy OID was not present in the Root CA certificate. RFC 5280 is strict: a child CA can only reference policies that exist in its parent. The fix required pulling the offline Root from the safe, re-issuing its certificate, and redistributing the new Root to every client.
 
-Every section in this article covers a decision like that one. Permanent. Unforgiving. Worth getting right.
+Three failures. Organizational, security, and technical. All permanent. All preventable. All caused by skipping proper planning.
 
-## The Tier Decision: 1-Tier is a Disaster, 2-Tier is the Sweet Spot, 3-Tier When You Need It
+Every section in this article covers a decision like these.
 
-### Why 1-Tier is Unacceptable
+---
+
+## Part I: Before You Install
+
+These are the questions you answer before you touch a server. They are organizational and security decisions that exist independent of your architecture choices.
+
+### Delegation of Control: Who Owns Your PKI?
+
+Here is the planning decision most people skip entirely: who is going to manage this PKI?
+
+By default, ADCS installation requires Enterprise Admin rights. Template management requires Enterprise Admin rights. Publishing to NTAuth requires Enterprise Admin rights. If you follow the default path, your PKI is managed by whoever holds those keys.
+
+The instinctive reaction is: separate it. Dedicated PKI admin group, delegated permissions, no dependency on domain admins. Separation of duties. Least privilege. All the right principles.
+
+But here is the tension. ADCS is not a standalone system. It is deeply integrated into Active Directory. Certificate templates live in the Configuration partition. NTAuth controls authentication trust. Domain controller certificates determine whether smart card logon works. Group Policy controls autoenrollment. Every significant PKI decision has Active Directory implications, and every significant AD change can affect PKI.
+
+This means whoever manages your PKI needs to understand both. Not just certificate extensions and CRL distribution points, but also AD replication, Group Policy processing, Kerberos authentication, and how NTAuth interacts with domain controller certificates. In my experience, domain admins are rarely PKI specialists. And PKI specialists often don't have enough AD depth to understand the full impact of their changes.
+
+That is the real problem. Not "who has the permissions," but "who has the knowledge."
+
+**If your domain admins are also PKI-competent** (or willing to become so), there is a legitimate argument for keeping PKI management with them. They already understand the AD integration points. They see the full picture. A domain admin who understands PKI would catch the NTAuth issue described in the introduction. A dedicated PKI admin who does not understand AD authentication might not.
+
+**If your domain admins are not PKI specialists** (which is the more common situation), you need delegation. Set up a dedicated PKI admin group with permissions on:
+
+- Certificate template objects (CN=Certificate Templates)
+- OID container
+- Enrollment Services
+- AIA and CDP containers
+- KRA container
+- NTAuth (if this CA serves authentication)
+
+This is not simple to configure. The permissions span multiple AD containers, each needing specific ACEs. But it is worth doing. Once configured, your PKI team operates without waiting for an Enterprise Admin to be available.
+
+**Either way, the critical point is:** whoever manages PKI must understand its AD integration. A PKI admin who does not understand NTAuth, domain controller templates, and Group Policy autoenrollment is a risk. A domain admin who does not understand certificate extensions, CRL validity, and policy modules is equally a risk.
+
+Plan for this before installation. Identify who will own PKI operations, make sure they have the right knowledge (not just the right permissions), and set up the access model accordingly. Do not let it be an afterthought.
+
+### Certificate-Based Authentication: A Conscious Decision
+
+When you install an enterprise CA, ADCS automatically publishes the CA certificate to the NTAuth container in Active Directory. This single action enables certificate-based authentication across your environment: smart card logon, client certificate authentication, Windows Hello for Business, NPS-based 802.1x, the works.
+
+Most people do not realize this happened. They installed ADCS, published a domain controller template (often from a best-practice guide), and moved on. What they did not notice is that they just enabled every certificate issued by that CA to potentially be used for Active Directory logon, depending on the EKU and subject.
+
+Here is where it gets dangerous. If you have a template that issues client authentication certificates, and that template allows the requester to supply their own subject name (or SAN), and you are not running a policy module like TameMyCerts, then anyone who can request a certificate can request one with `administrator@yourdomain.local` in the SAN. If the CA is in NTAuth, that certificate works for domain logon. Game over.
+
+This is not a theoretical attack. It is a well-documented escalation path (ESC1 and variants). And it applies to any certificate with Client Authentication EKU, not just user certificates.
+
+The planning decision is not "remove from NTAuth or leave it." It is broader than that.
+
+#### Strong Certificate Mapping: The Mitigation That Changed the Game
+
+Microsoft addressed this class of attacks with the May 2022 security update. Enterprise CAs now automatically embed the requester's Security Identifier (SID) in a new certificate extension. Domain controllers in Full Enforcement mode (default since September 2025, with no opt-out for new installations) verify that the SID in the certificate matches the authenticating account. This makes the classic ESC1 attack, requesting a certificate with another user's UPN in the SAN, significantly harder: the certificate will carry the requester's own SID, not the administrator's.
+
+This is not a reason to relax. Strong certificate mapping mitigates one attack vector, but it does not replace proper template hardening. Certificates issued by standalone CAs, non-Microsoft CAs, or MDM platforms do not automatically receive the SID extension. Legacy environments that delayed the September 2025 update may still run in Compatibility mode. And new attack variants continue to emerge. Strong mapping is one layer. Template hardening, policy modules, and EKU restrictions remain essential.
+
+#### What Certificate Authentication Actually Controls
+
+When the CA is in NTAuth, it is not just smart card logon that is enabled. Several features depend on the CA being in NTAuth:
+
+- Smart card logon and Windows Hello for Business
+- Enroll on Behalf Of (EOBO) / enrollment agents
+- Key Recovery and Private Key Archiving
+- Network Policy Server (NPS) for 802.1x, DirectAccess, Always On VPN
+- EFS File Recovery Agents
+- IIS Client Certificate Mapping against Active Directory
+- NDES renewal mode
+
+Removing the CA from NTAuth breaks all of these. It is the most drastic measure, and it has consequences that are easy to overlook.
+
+#### Deciding Whether Certificate Logon Should Be Enabled
+
+This is not a PKI team decision alone. Involve your domain admins and security team. If the organization wants smart card logon or certificate-based VPN authentication, configure it properly: dedicated templates with strict SAN validation, a policy module enforcing subject name rules, and EKU Qualified Subordination on the CA certificate to limit what types of certificates it can issue.
+
+#### Restricting or Disabling Certificate Logon
+
+If certificate-based logon is not desired, you have several options, from least to most drastic:
+
+- **Template hardening:** Do not publish templates that allow requesters to supply their own subject. Use "Build from this Active Directory information" instead of "Supply in the request."
+- **Policy module (TameMyCerts):** Enforce strict SAN validation on every request. Even if a template allows subject supply, the policy module rejects anything that does not match the rules.
+- **EKU Qualified Subordination:** Restrict the CA certificate itself so it cannot issue certificates with Smart Card Logon or Client Authentication EKU.
+- **Domain controller templates:** Use a custom domain controller template that supports LDAPS but does not enable smart card logon processing. This is a subtle but important distinction.
+- **Remove from NTAuth:** The nuclear option. Effective, but breaks other features. Only appropriate if you are certain none of the dependent features are needed.
+
+The point is: this must be a conscious decision. Not something that happens by default because you followed an installation guide. Discuss it with your domain admins. Document the decision. And implement the appropriate controls before you go to production.
+
+---
+
+## Part II: Architecture Decisions
+
+With ownership and security awareness established, you can make informed architecture choices. These decisions define the structure of your PKI for the next 10-15 years.
+
+### The Tier Decision: 1-Tier is a Disaster, 2-Tier is the Sweet Spot, 3-Tier When You Need It
+
+#### Why 1-Tier is Unacceptable
 
 A single-tier PKI means one CA that is both your Root and your Issuing CA. Usually domain-joined, because convenience. It issues certificates directly to users, computers, services.
 
 This is a security nightmare.
 
-If that server is compromised, your entire trust anchor is gone. You cannot revoke a Root CA certificate. Clients won't honor it, because revoking your own Root breaks the chain of trust. Your only option is to manually remove the Root certificate from every single client in your environment and deploy a new one. For an enterprise with thousands of devices, this is a catastrophic failure.
+If that server is compromised, your entire trust anchor is gone. You cannot revoke a Root CA certificate. Clients will not honor it, because revoking your own Root breaks the chain of trust. Your only option is to manually remove the Root certificate from every single client in your environment and deploy a new one. For an enterprise with thousands of devices, this is a catastrophic failure.
 
 And it gets worse. If an attacker compromises your Root CA, they can issue certificates for anything. Any user. Any service. Code signing. Whatever they want. Forever, until you notice and rebuild from scratch.
 
 There is no scenario where single-tier PKI is acceptable in production. None.
 
-### 2-Tier: The Right Choice for Most Enterprises
+#### 2-Tier: The Right Choice for Most Enterprises
 
 For 95% of organizations, two tiers is the answer.
 
@@ -50,7 +143,7 @@ A standalone, non-domain-joined Windows Server (or Linux box, more on that later
 2. Issuing CA installation: sign the Issuing CA certificate.
 3. Renewal events: renew the Root CA certificate or re-sign Issuing CA certificates.
 
-The rest of the time it's powered off. Air-gapped. Not on the network. If someone wants to compromise it, they need physical access to your server room or safe.
+The rest of the time it is powered off. Air-gapped. Not on the network. If someone wants to compromise it, they need physical access to your server room or safe.
 
 **Tier 2: Online Issuing CA(s)**
 
@@ -58,21 +151,21 @@ Domain-joined enterprise CAs that handle day-to-day operations. Users request ce
 
 If an Issuing CA is compromised, you pull the Root CA out of the safe, revoke the compromised Issuing CA's certificate, publish the updated CRL, and stand up a new Issuing CA. The trust in your Root remains intact. Clients see the revoked Issuing CA certificate, stop trusting it, and you move on.
 
-That's the value of separation. The Root is your trust anchor. Protect it like your life depends on it, because operationally, it does.
+That is the value of separation. The Root is your trust anchor. Protect it like your life depends on it, because operationally, it does.
 
-### When 3-Tier Makes Sense
+#### When 3-Tier Makes Sense
 
 You add a third tier (Root - Policy/Intermediate - Issuing) when you need policy or namespace separation that cannot be achieved any other way.
 
-Examples where I've seen 3-tier justified:
+Examples where I have seen 3-tier justified:
 
 - Multi-tenant environments where different business units must be cryptographically isolated. Each tenant gets their own Intermediate CA under a shared Root.
 - Geographic distribution with high-latency or unreliable WAN links. Regional Intermediate CAs reduce dependency on a central Issuing CA.
 - Legal or compliance requirements demanding separate policy trees for different certificate types (e.g., certificates for employees vs contractors).
 
-If none of those apply, you're adding complexity for no gain. Three-tier hierarchies are harder to operate, harder to renew, and harder to troubleshoot. Only deploy them when 2-tier genuinely cannot meet your requirements.
+If none of those apply, you are adding complexity for no gain. Three-tier hierarchies are harder to operate, harder to renew, and harder to troubleshoot. Only deploy them when 2-tier genuinely cannot meet your requirements.
 
-## HSM: Standard, Not Optional
+### HSM: Standard, Not Optional
 
 I need to be blunt here. If your CA private keys are stored on a hard drive, in Windows Key Storage Provider, or as a .pfx file, they are portable. An admin can export them. An attacker who gains admin rights can copy them.
 
@@ -86,7 +179,7 @@ For your Issuing CAs, which handle thousands of signing operations per day, you 
 
 Compare that to the cost of rebuilding your entire PKI after a key compromise. HSM is not optional.
 
-## The Root CA Platform: It Doesn't Matter, Until It Does
+### The Root CA Platform: It Doesn't Matter, Until It Does
 
 Windows is not sacred for the Root CA. Neither is Linux. What matters is: can you protect the private key, and can you maintain the CA over its 15-year lifetime?
 
@@ -98,17 +191,17 @@ If you use an HSM (and you should), the platform matters less. The key lives in 
 
 If you use Linux with OpenSSL, the signing workflow is different but equally valid. OpenSSL supports PKCS#11 for HSM integration. The commands are scriptable and reproducible. But you need someone comfortable with OpenSSL certificate operations and basic Linux administration. If that person leaves and nobody can operate the Root CA in 10 years, you have a problem.
 
-Without an HSM, the platform matters more, because the key is stored in software. Windows KSP stores it in the file system (exportable by any admin). OpenSSL stores it as a PEM file. Either way, the key is portable and vulnerable. Without an HSM, you're relying on physical security (the safe, the air gap) as your only protection. It works, but it's one layer instead of two.
+Without an HSM, the platform matters more, because the key is stored in software. Windows KSP stores it in the file system (exportable by any admin). OpenSSL stores it as a PEM file. Either way, the key is portable and vulnerable. Without an HSM, you are relying on physical security (the safe, the air gap) as your only protection. It works, but it is one layer instead of two.
 
 My take: use an HSM. Then pick whichever platform your team can maintain for 15 years. Windows with ADCS standalone is the path of least resistance for most enterprises. Linux with OpenSSL is leaner and equally capable. Both work. Pick the one you can support.
 
-Your Issuing CAs will still be Windows Server running ADCS, because Active Directory integration requires it. But the Root CA is a different story. It's offline. It doesn't need AD. Choose what works for your team and your key protection strategy.
+Your Issuing CAs will still be Windows Server running ADCS, because Active Directory integration requires it. But the Root CA is a different story. It is offline. It does not need AD. Choose what works for your team and your key protection strategy.
 
-## Naming Conventions That Age Well
+### Naming Conventions That Age Well
 
-Your CA name needs to identify who owns it. You need the organization name in there. When someone inspects a certificate chain, they need to know whose Root they're trusting. That's non-negotiable.
+Your CA name needs to identify who owns it. You need the organization name in there. When someone inspects a certificate chain, they need to know whose Root they are trusting. That is non-negotiable.
 
-What you don't want is organizational structure, location, or dates baked into the name. Don't name your CA "CORP-HQ-CA01" or "EMEA-ROOT-2025". In 10 years, your company may restructure. Datacenters move. Regions reorganize. That CA name is baked into every certificate you issue. It's in the Authority Key Identifier extension. It's in the Issuing Distribution Point. Changing it means standing up a new CA and migrating everything.
+What you do not want is organizational structure, location, or dates baked into the name. Do not name your CA "CORP-HQ-CA01" or "EMEA-ROOT-2025". In 10 years, your company may restructure. Datacenters move. Regions reorganize. That CA name is baked into every certificate you issue. It is in the Authority Key Identifier extension. It is in the Issuing Distribution Point. Changing it means standing up a new CA and migrating everything.
 
 Keep it simple: organization name, function, generation.
 
@@ -125,7 +218,7 @@ If you need to distinguish multiple Issuing CAs, use functional descriptors, not
 
 Not "EMEA-CA" or "HQ-CA". Locations change. Functions are stable.
 
-## Certificate Lifetime Planning: The Pyramid
+### Certificate Lifetime Planning: The Pyramid
 
 Plan your CA certificate lifetimes in a pyramid:
 
@@ -137,13 +230,13 @@ Why the pyramid? Because a CA cannot issue a certificate with a validity period 
 
 If your Issuing CA certificate expires in 1 year, it cannot issue certificates that outlive it. The signing operation will fail, or worse, succeed but produce an invalid certificate that clients reject.
 
-And think about what's happening with end-entity certificate lifetimes. Public TLS certificates are already down to 1 year maximum, and the industry is pushing toward 90-day certificates. Even for internal certificates, there's a strong argument for following the same direction. Shorter lifetimes limit the window of exposure if a key is compromised, and they force you to automate renewal, which is a good thing. If you're still issuing 2-year internal TLS certificates, you're behind the curve. Plan your CA lifetimes with the assumption that end-entity certificates will keep getting shorter.
+And think about what is happening with end-entity certificate lifetimes. Public TLS certificates are already down to 1 year maximum, and the industry is pushing toward 90-day certificates. Even for internal certificates, there is a strong argument for following the same direction. Shorter lifetimes limit the window of exposure if a key is compromised, and they force you to automate renewal, which is a good thing. If you are still issuing 2-year internal TLS certificates, you are behind the curve. Plan your CA lifetimes with the assumption that end-entity certificates will keep getting shorter.
 
-### The Half-Life Renewal Rule
+#### The Half-Life Renewal Rule
 
 You must plan to renew each CA when it reaches half of its validity period.
 
-If your Issuing CA has a 5-year certificate, you renew it at 2.5 years. Not at 4.5 years when you're in panic mode. At the halfway point.
+If your Issuing CA has a 5-year certificate, you renew it at 2.5 years. Not at 4.5 years when you are in panic mode. At the halfway point.
 
 Why? Because renewal is not instant. You need to:
 
@@ -152,30 +245,30 @@ Why? Because renewal is not instant. You need to:
 3. Verify that clients trust both the old and new CA certificate during the overlap period.
 4. Monitor for clients still using the old CA certificate after the overlap ends.
 
-If you wait until 6 months before expiration, you're in a high-pressure situation where mistakes happen. And PKI mistakes are expensive.
+If you wait until 6 months before expiration, you are in a high-pressure situation where mistakes happen. And PKI mistakes are expensive.
 
-## Root CA Renewal Strategy: Plan It 5 Years Before You Need It
+### Root CA Renewal Strategy: Plan It 5 Years Before You Need It
 
-Your Root CA certificate has a 15-year lifetime. You need to renew it around year 7 or 8. That sounds far away, so it's easy to ignore.
+Your Root CA certificate has a 15-year lifetime. You need to renew it around year 7 or 8. That sounds far away, so it is easy to ignore.
 
-Don't.
+Do not.
 
 Renewing a Root CA is not like renewing an Issuing CA. When you renew the Root, you have two options:
 
 1. **Renew with the same key:** The new Root CA certificate has a new validity period but the same public/private key pair. Clients that trust the old Root automatically trust the new one (same key = same trust anchor).
-2. **Renew with a new key:** You generate a new key pair. This is more secure (limits exposure if the old key is somehow compromised), but it's also more complex. You must distribute the new Root CA certificate to all clients before the old one expires.
+2. **Renew with a new key:** You generate a new key pair. This is more secure (limits exposure if the old key is somehow compromised), but it is also more complex. You must distribute the new Root CA certificate to all clients before the old one expires.
 
-Most enterprises choose option 1 for the first renewal. It's simpler. The second time (around year 15), you stand up a new Root CA with a new key (G2) and plan a migration.
+Most enterprises choose option 1 for the first renewal. It is simpler. The second time (around year 15), you stand up a new Root CA with a new key (G2) and plan a migration.
 
-### What Happens If You Don't Plan Renewal
+#### What Happens If You Don't Plan Renewal
 
 If your Root CA certificate expires, every certificate issued by your entire PKI becomes invalid. Instantly. No authentication. No encrypted traffic. Nothing works.
 
 Replacing an expired Root CA certificate requires manually touching every client. Workstations. Servers. Network devices. IoT endpoints. Mobile phones. If you have 10,000 devices, you have 10,000 touches. Even with automation, this is weeks of work.
 
-Plan the renewal 5 years in advance. Test the procedure in a lab. Document the process. Assign ownership. Set calendar reminders for the people who will be doing this, because they might not be you. I've seen PKI deployments where the original architect left the company years before renewal was due, and nobody knew how it was built.
+Plan the renewal 5 years in advance. Test the procedure in a lab. Document the process. Assign ownership. Set calendar reminders for the people who will be doing this, because they might not be you. I have seen PKI deployments where the original architect left the company years before renewal was due, and nobody knew how it was built.
 
-### The 2030/2035 Deadline: Your CA's Expiry is Sooner Than You Think
+#### The 2030/2035 Deadline: Your CA's Expiry is Sooner Than You Think
 
 Here is the reality of planning a PKI in 2026: the "15-year Root" assumption needs adjustment.
 
@@ -183,28 +276,34 @@ NIST's guidance (IR 8547 and updates to SP 800-131A) sets aggressive timelines f
 - **By 2030:** Classical algorithms at ~112-bit security strength (RSA-2048, ECC P-256) are **deprecated** for new systems.
 - **By 2035:** All classical asymmetric cryptography is targeted to be **disallowed** in federal and high-assurance environments.
 
-If you build a Root CA today (March 2026) with a 15-year lifetime, it expires in 2041, six years after the 2035 target. This means your "long-lived" Root will outlive the cryptographic algorithms it is based on.
+If you build a Root CA today with a 15-year lifetime, it expires in 2041, six years after the 2035 target. This means your "long-lived" Root will outlive the cryptographic algorithms it is based on.
 
 This changes your planning:
-1.  **Lifetime:** A 15-year Root is still fine for trust continuity, but treat 2035 as a hard migration milestone. Design your renewal cycle around it.
-2.  **Agility:** Your hierarchy must be "Quantum Ready." This means using Windows Server 2025 (which already has CNG support for ML-KEM and ML-DSA) and planning for hybrid certificates (Classical + PQC signatures) during the transition.
-3.  **The "Next Root":** Your "G2" Root (see Naming Conventions) should not be a simple RSA-4096 renewal. Plan it as PQC or hybrid from the start.
+1. **Lifetime:** A 15-year Root is still fine for trust continuity, but treat 2035 as a hard migration milestone. Design your renewal cycle around it.
+2. **Agility:** Your hierarchy must be "Quantum Ready." Windows Server 2025 ships ML-KEM and ML-DSA support in its CNG libraries (GA since November 2025), meaning the cryptographic primitives are available at the OS level. Microsoft has announced PQC support for ADCS, including PQC-signed certificates and CRLs across all role services, but this has not shipped yet as of early 2026. Plan for hybrid certificates (classical + PQC signatures) during the transition.
+3. **The "Next Root":** Your "G2" Root (see Naming Conventions) should not be a simple RSA-4096 renewal. Plan it as PQC or hybrid from the start.
 
-Don't build a 15-year monument to legacy crypto. Build a bridge that gets you safely to post-quantum.
+Do not build a 15-year monument to legacy crypto. Build a bridge that gets you safely to post-quantum.
 
-## Name Constraints: Hard Restrictions You Decide Now
+---
 
-Here's a planning decision that most guides skip: Name Constraints.
+## Part III: Security Constraints
 
-Name Constraints restrict which DNS names and email addresses a CA is allowed to issue certificates for. You set them in CAPolicy.inf at installation time. Once the CA certificate is issued, they're baked in. You cannot change them without revoking the CA certificate and starting over.
+These are the cryptographic restrictions you bake into CA certificates at install time. They cannot be changed after issuance. Get them right, because there is no undo.
+
+### Name Constraints: Hard Restrictions You Decide Now
+
+Here is a planning decision that most guides skip: Name Constraints.
+
+Name Constraints restrict which DNS names and email addresses a CA is allowed to issue certificates for. You set them in CAPolicy.inf at installation time. Once the CA certificate is issued, they are baked in. You cannot change them without revoking the CA certificate and starting over.
 
 Example: you have an Issuing CA dedicated to internal web services. You want it to only issue certificates for `*.internal.company.com`. You add a Permitted Subtrees Name Constraint for `internal.company.com`.
 
 Now, even if an attacker compromises that Issuing CA, they cannot issue a certificate for `google.com` or `login.company.com` (outside the `internal` subdomain). The certificate will technically be valid (correct signature, trusted chain), but clients that honor Name Constraints will reject it because it violates the permitted namespace.
 
-This is a HARD restriction. It's in the CA certificate. It's cryptographically enforced. An attacker cannot disable it via policy changes or configuration tweaks.
+This is what I call a HARD restriction. It is baked into the CA certificate at issuance time. It is cryptographically enforced. An attacker who compromises the CA cannot disable it via policy changes, configuration tweaks, or registry edits. The only way to change it is to revoke the CA certificate and re-issue it. Every constraint discussed in this section (Name Constraints, EKU Qualified Subordination, Certificate Policy OIDs, PathLength) shares this property. Decide them carefully, because you will live with them for the lifetime of the CA.
 
-### When to Use Name Constraints
+#### When to Use Name Constraints
 
 Use Name Constraints when:
 
@@ -212,9 +311,9 @@ Use Name Constraints when:
 - You want defense in depth against CA compromise (even if the CA is hacked, the attacker's reach is limited).
 - You have compliance requirements mandating namespace isolation.
 
-Don't use them if you need flexibility. Once set, they're permanent. If your namespace changes (company acquires another domain, you reorganize DNS structure), you're stuck. You'll need to stand up a new CA with updated constraints or accept that the old CA cannot issue certs for the new namespace.
+Do not use them if you need flexibility. Once set, they are permanent. If your namespace changes (company acquires another domain, you reorganize DNS structure), you are stuck. You will need to stand up a new CA with updated constraints or accept that the old CA cannot issue certs for the new namespace.
 
-## EKU Qualified Subordination: Limit Certificate Types Per CA
+### EKU Qualified Subordination: Limit Certificate Types Per CA
 
 Extended Key Usage (EKU) constraints are another planning decision you make at install time.
 
@@ -226,9 +325,9 @@ Example: you have an Issuing CA dedicated to web server certificates. You add on
 
 Now, if someone requests a code signing certificate from that CA (EKU `1.3.6.1.5.5.7.3.3`), two things happen. First, the Microsoft CA itself will refuse to issue the certificate in its default configuration, because the requested EKU does not match the CA certificate's allowed EKUs. Second, even if a certificate with a non-matching EKU were somehow issued (through a different CA implementation or misconfiguration), clients that enforce EKU constraints will reject it during chain validation, because the CA's own certificate does not authorize code signing. Note that this enforcement is application-dependent. Microsoft's CryptoAPI, Firefox, and OpenSSL all support it, but no universally valid guarantee covers every application.
 
-This is also a HARD restriction. It's in the CA certificate. It cannot be changed via policy or configuration. It requires revoking the CA and re-issuing it with different EKUs.
+Like Name Constraints, this is a hard restriction baked into the CA certificate (see above).
 
-### When to Use EKU Qualified Subordination
+#### When to Use EKU Qualified Subordination
 
 Use it when:
 
@@ -236,9 +335,9 @@ Use it when:
 - You want to limit blast radius if a CA is compromised (a compromised web CA cannot issue code signing certs).
 - You have compliance requirements demanding separation of duties.
 
-Don't use it if you need a general-purpose Issuing CA. Most enterprises start with one Issuing CA that handles all certificate types. EKU constraints make sense when you scale up to multiple Issuing CAs with specific roles.
+Do not use it if you need a general-purpose Issuing CA. Most enterprises start with one Issuing CA that handles all certificate types. EKU constraints make sense when you scale up to multiple Issuing CAs with specific roles.
 
-## Certificate Policy OIDs: Plan Your Hierarchy Before You Install
+### Certificate Policy OIDs: Plan Your Hierarchy Before You Install
 
 Certificate Policies are OIDs embedded in CA certificates that declare under which issuance policy a certificate was issued. They tie your technical PKI to your organization's Certificate Practice Statement (CPS). This is a planning decision because, like Name Constraints and EKU, the policy OIDs are baked into the CA certificate at installation time via CAPolicy.inf.
 
@@ -252,30 +351,13 @@ Here is how the hierarchy works:
 
 To get your own policy OIDs, register a Private Enterprise Number (PEN) with IANA. It is free and takes a few days. You get a root OID under `1.3.6.1.4.1.{your-number}`, and you can define your own policy tree below it. Podans documented the entire process and the technical implementation in his two-part series on Certificate Policies (linked in the sources below).
 
-### Get it right before you install
+#### Get it right before you install
 
 The OID mistake from the introduction of this article happened because nobody checked the policy hierarchy before writing CAPolicy.inf. The lesson is simple: before you write a single OID into your CAPolicy.inf, map the entire policy hierarchy from Root to Issuing. Verify which OIDs exist at every level. Your Issuing CA's policies must be a subset of what the parent allows. If the Root uses All Issuance Policies (2.5.29.32.0), any child policy is valid. If the Root or Intermediate defines specific policies, your Issuing CA must use those exact OIDs or a subset. Podans documented the mechanics in detail in his two-part series (linked in the sources below).
 
 There is no way to change Certificate Policies after the CA certificate is issued.
 
-## Hard vs Soft Restrictions: Plan for Flexibility
-
-Name Constraints and EKU Qualified Subordination are HARD restrictions. They're in the CA certificate. They're immutable (barring revocation and re-issue). They're your last line of defense if everything else fails.
-
-There's another layer: SOFT restrictions. These are enforced by policy modules like TameMyCerts (covered in Part 5). TameMyCerts runs on the Issuing CA and validates every certificate request against a configurable policy. It can enforce subject name patterns, SAN validation, issuance approval workflows, EKU restrictions at the template level, and more.
-
-The key difference: TameMyCerts policies can be updated without rebuilding the CA. You can tighten restrictions, add exceptions, adjust rules as your environment evolves. This is the flexibility layer.
-
-The planning decision you make now is: how much to lock down via hard constraints (Name Constraints + EKU in the CA cert) versus soft constraints (TameMyCerts policy)?
-
-My approach:
-
-- **Use hard constraints for broad, permanent boundaries.** If you know this CA will never issue certificates outside `internal.company.com`, bake that in. If it's dedicated to TLS and will never do code signing, bake that in.
-- **Use soft constraints for fine-grained, evolving rules.** Subject name formats. SAN patterns. Approval workflows for certain templates. These change over time. Keep them in TameMyCerts where you can adjust them.
-
-This is defense in depth. The hard constraints protect you if TameMyCerts is misconfigured or disabled. The soft constraints give you the day-to-day control and flexibility you need.
-
-## PathLength Constraint: A Planning Decision You Cannot Afford to Skip
+### PathLength Constraint: A Planning Decision You Cannot Afford to Skip
 
 PathLength is a basic extension that controls how many levels of subordinate CAs can exist below a given CA.
 
@@ -295,82 +377,32 @@ Critical=TRUE
 
 One thing to be aware of: ADCS does not validate field names in CAPolicy.inf. Unknown or misspelled fields are silently ignored. No error, no warning. If PathLength is not in the resulting certificate, your CA has no depth restriction at all.
 
-The solution: always verify the resulting CA certificate against your expected configuration after installation. Don't trust that the script ran successfully. Open the certificate, check the Basic Constraints extension, confirm PathLength is present and set correctly. Automate this verification step. A post-install check that compares the certificate extensions to your design document takes five minutes to build and saves you from discovering the gap years later during an audit.
+The solution: always verify the resulting CA certificate against your expected configuration after installation. Do not trust that the script ran successfully. Open the certificate, check the Basic Constraints extension, confirm PathLength is present and set correctly. Automate this verification step. A post-install check that compares the certificate extensions to your design document takes five minutes to build and saves you from discovering the gap years later during an audit.
 
-## Certificate-Based Authentication: A Conscious Decision
+### Hard vs Soft Restrictions: Plan for Flexibility
 
-When you install an enterprise CA, ADCS automatically publishes the CA certificate to the NTAuth container in Active Directory. This single action enables certificate-based authentication across your environment: smart card logon, client certificate authentication, Windows Hello for Business, NPS-based 802.1x, the works.
+Name Constraints and EKU Qualified Subordination are HARD restrictions. They are in the CA certificate. They are immutable (barring revocation and re-issue). They are your last line of defense if everything else fails.
 
-Most people don't realize this happened. They installed ADCS, published a domain controller template (often from a best-practice guide), and moved on. What they didn't notice is that they just enabled every certificate issued by that CA to potentially be used for Active Directory logon, depending on the EKU and subject.
+There is another layer: SOFT restrictions. These are enforced by policy modules like TameMyCerts (covered in Part 5). TameMyCerts runs on the Issuing CA and validates every certificate request against a configurable policy. It can enforce subject name patterns, SAN validation, issuance approval workflows, EKU restrictions at the template level, and more.
 
-Here's where it gets dangerous. If you have a template that issues client authentication certificates, and that template allows the requester to supply their own subject name (or SAN), and you're not running a policy module like TameMyCerts, then anyone who can request a certificate can request one with `administrator@yourdomain.local` in the SAN. If the CA is in NTAuth, that certificate works for domain logon. Game over.
+The key difference: TameMyCerts policies can be updated without rebuilding the CA. You can tighten restrictions, add exceptions, adjust rules as your environment evolves. This is the flexibility layer.
 
-This is not a theoretical attack. It's a well-documented escalation path (ESC1 and variants). And it applies to any certificate with Client Authentication EKU, not just user certificates.
+The planning decision you make now is: how much to lock down via hard constraints (Name Constraints + EKU in the CA cert) versus soft constraints (TameMyCerts policy)?
 
-The planning decision is not "remove from NTAuth or leave it." It is broader than that.
+My approach:
 
-### What Certificate Authentication Actually Controls
+- **Use hard constraints for broad, permanent boundaries.** If you know this CA will never issue certificates outside `internal.company.com`, bake that in. If it is dedicated to TLS and will never do code signing, bake that in.
+- **Use soft constraints for fine-grained, evolving rules.** Subject name formats. SAN patterns. Approval workflows for certain templates. These change over time. Keep them in TameMyCerts where you can adjust them.
 
-When the CA is in NTAuth, it is not just smart card logon that is enabled. Several features depend on the CA being in NTAuth:
+This is defense in depth. The hard constraints protect you if TameMyCerts is misconfigured or disabled. The soft constraints give you the day-to-day control and flexibility you need.
 
-- Smart card logon and Windows Hello for Business
-- Enroll on Behalf Of (EOBO) / enrollment agents
-- Key Recovery and Private Key Archiving
-- Network Policy Server (NPS) for 802.1x, DirectAccess, Always On VPN
-- EFS File Recovery Agents
-- IIS Client Certificate Mapping against Active Directory
-- NDES renewal mode
+---
 
-Removing the CA from NTAuth breaks all of these. It is the most drastic measure, and it has consequences that are easy to overlook.
+## Part IV: Operational Planning
 
-### Deciding Whether Certificate Logon Should Be Enabled
+These decisions affect how you operate, maintain, and recover your PKI. They are not baked into certificates, but they are just as critical to get right before installation.
 
-This is not a PKI team decision alone. This is not a PKI team decision alone. Involve your domain admins and security team. If the organization wants smart card logon or certificate-based VPN authentication, configure it properly: dedicated templates with strict SAN validation, a policy module enforcing subject name rules, and EKU Qualified Subordination on the CA certificate to limit what types of certificates it can issue.
-
-### Restricting or Disabling Certificate Logon
-
-If certificate-based logon is not desired, you have several options, from least to most drastic:
-
-- **Template hardening:** Don't publish templates that allow requesters to supply their own subject. Use "Build from this Active Directory information" instead of "Supply in the request."
-- **Policy module (TameMyCerts):** Enforce strict SAN validation on every request. Even if a template allows subject supply, the policy module rejects anything that doesn't match the rules.
-- **EKU Qualified Subordination:** Restrict the CA certificate itself so it cannot issue certificates with Smart Card Logon or Client Authentication EKU.
-- **Domain controller templates:** Use a custom domain controller template that supports LDAPS but does not enable smart card logon processing. This is a subtle but important distinction.
-- **Remove from NTAuth:** The nuclear option. Effective, but breaks other features. Only appropriate if you're certain none of the dependent features are needed.
-
-The point is: this must be a conscious decision. Not something that happens by default because you followed an installation guide. Discuss it with your domain admins. Document the decision. And implement the appropriate controls before you go to production.
-
-## Delegation of Control: Who Owns Your PKI?
-
-Here's a planning decision most people skip entirely: who is going to manage this PKI?
-
-By default, ADCS installation requires Enterprise Admin rights. Template management requires Enterprise Admin rights. Publishing to NTAuth requires Enterprise Admin rights. If you follow the default path, your PKI is managed by whoever holds those keys.
-
-The instinctive reaction is: separate it. Dedicated PKI admin group, delegated permissions, no dependency on domain admins. Separation of duties. Least privilege. All the right principles.
-
-But here's the tension. As the NTAuth discussion above illustrates, ADCS is not a standalone system. It's deeply integrated into Active Directory. Certificate templates live in the Configuration partition. NTAuth controls authentication trust. Domain controller certificates determine whether smart card logon works. Group Policy controls autoenrollment. Every significant PKI decision has Active Directory implications, and every significant AD change can affect PKI.
-
-This means whoever manages your PKI needs to understand both. Not just certificate extensions and CRL distribution points, but also AD replication, Group Policy processing, Kerberos authentication, and how NTAuth interacts with domain controller certificates. In my experience, domain admins are rarely PKI specialists. And PKI specialists often don't have enough AD depth to understand the full impact of their changes.
-
-That's the real problem. Not "who has the permissions," but "who has the knowledge."
-
-**If your domain admins are also PKI-competent** (or willing to become so), there's a legitimate argument for keeping PKI management with them. They already understand the AD integration points. They see the full picture. The NTAuth issue we just discussed? A domain admin who understands PKI would catch that. A dedicated PKI admin who doesn't understand AD authentication might not.
-
-**If your domain admins are not PKI specialists** (which is the more common situation), you need delegation. Set up a dedicated PKI admin group with permissions on:
-
-- Certificate template objects (CN=Certificate Templates)
-- OID container
-- Enrollment Services
-- AIA and CDP containers
-- KRA container
-- NTAuth (if this CA serves authentication)
-
-This is not simple to configure. The permissions span multiple AD containers, each needing specific ACEs. But it's worth doing. Once configured, your PKI team operates without waiting for an Enterprise Admin to be available.
-
-**Either way, the critical point is:** whoever manages PKI must understand its AD integration. A PKI admin who doesn't understand NTAuth, domain controller templates, and Group Policy autoenrollment is a risk. A domain admin who doesn't understand certificate extensions, CRL validity, and policy modules is equally a risk.
-
-Plan for this before installation. Identify who will own PKI operations, make sure they have the right knowledge (not just the right permissions), and set up the access model accordingly. Don't let it be an afterthought.
-
-## Role Separation: The Right Design That Nobody Enables
+### Role Separation: The Right Design That Nobody Enables
 
 ADCS supports role-based access control that separates CA administration from certificate management. The roles are distinct: the CA Administrator configures the CA and manages its settings. The Certificate Manager approves and revokes certificate requests. The Enrollment Agent requests certificates on behalf of others. The Backup Operator handles CA backups.
 
@@ -386,7 +418,7 @@ My recommendation: enable role separation for production Issuing CAs. Plan your 
 
 The configuration itself is straightforward (a checkbox in CA properties), but its implications cascade through your operational procedures. Every runbook, every template change workflow, every emergency procedure must account for which role can perform which action. Plan this before you install, not after the first time someone cannot issue a certificate and does not understand why.
 
-## Backup and Recovery: Plan It Before You Need It
+### Backup and Recovery: Plan It Before You Need It
 
 CA backup and recovery is not an operational detail. It is a planning decision because the consequences of getting it wrong are catastrophic and the recovery procedure depends on choices you make at installation time.
 
@@ -408,7 +440,7 @@ What to plan before installation:
 
 Part 7 covers backup and recovery procedures in operational detail. This section is about the planning decision: decide your backup strategy, test it, and document it before your CA issues its first certificate.
 
-## Key Archival: Know When You Need It
+### Key Archival: Know When You Need It
 
 Key archival allows the CA to store a copy of a certificate's private key in its database at issuance time, so it can be recovered later if the original is lost. This applies only to encryption certificates, not signing certificates. ADCS enforces this: if a template is configured for digital signature only, the CA will refuse to archive the key.
 
@@ -422,7 +454,7 @@ There is an operational trap here. Default KRA certificates have a 2-year validi
 
 Podans proposed an elegant solution: use self-signed KRA certificates with a validity matching the CA lifetime. Self-signed is acceptable here because KRA certificates only need to be trusted by the CA itself, not by any external party. Create a pair of long-lived self-signed KRA certificates, store the private keys on smart cards or HSM, install the certificates as trusted only on the CA server, and configure them as KRA certificates. This reduces the number of keys to maintain from 10 to 1 per KRA, and aligns KRA certificate renewal with CA renewal. See Podans' article on KRA certificate management (linked in sources) for the full implementation.
 
-## CA Database Location: Separate It From Day One
+### CA Database Location: Separate It From Day One
 
 This is a short one, but it matters. Place the CA database and log files on a separate volume from the operating system. Not the same disk. Not the same partition. A separate physical or logical volume.
 
@@ -432,7 +464,7 @@ Second, performance. In high-volume environments (tens of thousands of issuances
 
 Configure this during ADCS installation. The setup wizard asks for the database and log file locations. Do not accept the defaults (which place everything on C:). Point them to a separate volume. This is a one-time decision that you cannot easily change after installation without migrating the database.
 
-## CRL and AIA Publication: Plan Before You Install
+### CRL and AIA Publication: Plan Before You Install
 
 CRL Distribution Points (CDP) and Authority Information Access (AIA) URLs are embedded in every certificate your CA issues. Once a certificate is issued with a specific CDP or AIA URL, that URL must remain reachable for the entire lifetime of that certificate. Changing these URLs after installation means all previously issued certificates still point to the old location.
 
@@ -448,42 +480,51 @@ Configure CDP and AIA in ADCS immediately after installation, before issuing any
 
 Part 4 covers CRL validity periods, delta CRLs, OCSP configuration, and CRL partitioning in detail. This section is about the planning decision: know your URLs before you install.
 
+---
+
 ## Putting It All Together: The Planning Checklist
 
 Before you install your first CA, answer these questions:
 
-1. **Tier choice:** 2-tier or 3-tier? (Spoiler: almost always 2-tier.)
-2. **HSM:** What hardware will protect your Root and Issuing CA private keys?
-3. **Root CA platform:** Windows or Linux? Pick what your team can maintain for 15 years.
-4. **Naming convention:** What will you call your CAs? (Think 10 years ahead.)
-5. **Certificate lifetimes:** Root 15yr, Issuing 5yr. When will you renew each?
-6. **Root CA renewal strategy:** Renew with same key or new key? When do you start planning for it?
-7. **Name Constraints:** Do you need to restrict DNS/email namespaces per CA?
-8. **EKU Qualified Subordination:** Do you need to restrict certificate types per CA?
-9. **Certificate Policy OIDs:** Map the policy hierarchy from Root to Issuing. Register your PEN with IANA. Verify parent CA policies before defining your own.
-10. **PathLength:** Set to 0 for Issuing CAs. Verify it in the certificate after installation.
-11. **Hard vs Soft:** What gets locked in the CA cert, and what stays configurable via TameMyCerts?
-12. **NTAuth:** Will this CA issue authentication certificates? If not, remove it from the NTAuth container immediately after install.
-13. **Delegation of Control:** Who manages the PKI? Set up dedicated PKI admin permissions before installation, not after.
+**Before you install:**
+1. **Delegation of Control:** Who manages the PKI? Set up dedicated PKI admin permissions before installation, not after. Ensure they have the right knowledge, not just the right permissions.
+2. **Certificate-based authentication:** Will this CA issue authentication certificates? Understand what NTAuth enables. Decide on template hardening, policy modules, and EKU restrictions before you go to production.
+
+**Architecture:**
+3. **Tier choice:** 2-tier or 3-tier? (Spoiler: almost always 2-tier.)
+4. **HSM:** What hardware will protect your Root and Issuing CA private keys?
+5. **Root CA platform:** Windows or Linux? Pick what your team can maintain for 15 years.
+6. **Naming convention:** What will you call your CAs? (Think 10 years ahead.)
+7. **Certificate lifetimes:** Root 15yr, Issuing 5yr. When will you renew each?
+8. **Root CA renewal strategy:** Renew with same key or new key? When do you start planning for it?
+
+**Security constraints:**
+9. **Name Constraints:** Do you need to restrict DNS/email namespaces per CA?
+10. **EKU Qualified Subordination:** Do you need to restrict certificate types per CA?
+11. **Certificate Policy OIDs:** Map the policy hierarchy from Root to Issuing. Register your PEN with IANA. Verify parent CA policies before defining your own.
+12. **PathLength:** Set to 0 for Issuing CAs. Verify it in the certificate after installation.
+13. **Hard vs Soft:** What gets locked in the CA cert, and what stays configurable via TameMyCerts?
+
+**Operational planning:**
 14. **Role separation:** Enable it for production CAs. Plan your team roles (CA Admin vs Certificate Manager) before installation.
 15. **Backup and recovery:** Define your backup strategy, key backup location, and recovery procedure. Test the restore before going to production.
 16. **Key archival:** Do you have encryption use cases (S/MIME, EFS)? If yes, plan KRA enrollment and enable archival on those templates.
 17. **CA database location:** Separate volume for database and log files. Not on C:.
-17. **CDP and AIA URLs:** Decide your publication hostname and protocol (HTTP only) before issuing any certificates.
+18. **CDP and AIA URLs:** Decide your publication hostname and protocol (HTTP only) before issuing any certificates.
 
 Document your answers. Put them in version control. These decisions define your PKI for the next 10-15 years.
 
-Get them right now. Because there's no undo button.
+Get them right now. Because there is no undo button.
 
 ## What's Next
 
 Part 3 covers cryptography choices. RSA 4096 vs ECC. SHA-256 vs SHA-384. PKCS#1 v2.1 signature algorithms. Post-quantum readiness. Key lengths that matter and the ones that don't.
 
-You've planned your hierarchy. Now you need to choose the algorithms that will secure it for the next decade.
+You have planned your hierarchy. Now you need to choose the algorithms that will secure it for the next decade.
 
 ---
 
-**Next in series:** Part 3 - Cryptography in 2026  
+**Next in series:** Part 3 - Cryptography in 2026
 **Previous in series:** Part 1 - What I Learned Running Enterprise PKI
 
 ---
@@ -500,3 +541,7 @@ You've planned your hierarchy. Now you need to choose the algorithms that will s
 - IANA: [Private Enterprise Numbers (PEN) registration](https://www.iana.org/assignments/enterprise-numbers/)
 - NIST: [IR 8547 - Transition to Post-Quantum Cryptography Standards](https://csrc.nist.gov/pubs/ir/8547/ipd)
 - NIST: [SP 800-131A Rev 3 - Transitioning the Use of Cryptographic Algorithms](https://csrc.nist.gov/pubs/sp/800/131/a/r3/ipd)
+- Microsoft Security Blog: [Post-Quantum Cryptography APIs Now Generally Available on Microsoft Platforms](https://techcommunity.microsoft.com/blog/microsoft-security-blog/post-quantum-cryptography-apis-now-generally-available-on-microsoft-platforms/4469093) (November 2025)
+- Microsoft Support: [KB5014754 - Certificate-based authentication changes on Windows domain controllers](https://support.microsoft.com/en-us/topic/kb5014754-certificate-based-authentication-changes-on-windows-domain-controllers-ad2c23b0-15d8-4340-a468-4d4f3b188f16) (Strong Certificate Mapping enforcement timeline)
+- Uwe Gradenegger (Sleepw4lker): [Automatically add the SID certificate extension to certificates requested via MDM - with TameMyCerts](https://www.gradenegger.eu/en/automatically-add-the-security-identifier-sid-certificate-extension-to-certificates-requested-via-mobile-device-management-mdm-with-the-tamemycerts-policy-module-for-microsoft-active-directory-certificate-services-adcs/) (SID extension for non-autoenrollment scenarios)
+- Richard M. Hicks: [Strong Certificate Mapping Enforcement February 2025](https://directaccess.richardhicks.com/2025/01/27/strong-certificate-mapping-enforcement-february-2025/) (practical impact and preparation)
