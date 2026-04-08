@@ -5,7 +5,7 @@ date: 2026-04-08 10:00:00 +0200
 categories: [pki, adcs, security]
 tags: [ADCS, PKI, enterprise, certificate-authority, planning, HSM, constraints]
 author: Ben Coremans
-published: false
+published: true
 ---
 
 # Hierarchy & Planning: The Decisions That Define Your PKI
