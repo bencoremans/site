@@ -1,9 +1,9 @@
 ---
 layout: post
 title: "Cryptography in 2026: Choosing Algorithms for Enterprise PKI"
-date: 2026-04-07
+date: 2026-04-15
 categories: [pki, adcs, security]
-tags: [ADCS, PKI, enterprise, certificate-authority]
+tags: [ADCS, PKI, cryptography, RSA, ECC, PQC, SHA-256, TameMyCerts, post-quantum, CNG, CSP]
 author: Ben Coremans
 published: false
 ---
@@ -32,7 +32,7 @@ Three reasons.
 
 Shor's algorithm breaks RSA by solving the integer factorization problem in polynomial time on a quantum computer. The critical point: its runtime scales sub-exponentially with key size. Going from RSA-2048 to RSA-4096 does not double your quantum resistance, it adds a few weeks of quantum compute time. Going to RSA-8192 or RSA-16384 adds more weeks, maybe months. But it does not change the fundamental outcome. A sufficiently powerful quantum computer breaks all of them. The only protection against quantum is post-quantum cryptography, not bigger RSA keys.
 
-Gradenegger's analysis confirms this clearly: RSA-4096 with SHA-256 and PKCS#1 v1.5 is the correct enterprise standard today. The only reason to go higher would be certain compliance frameworks with unusual requirements, and those are rare.
+Gradenegger is unambiguous on this point: RSA-4096 with SHA-256 and PKCS#1 v1.5 is the correct enterprise standard today. The only reason to go higher would be certain compliance frameworks with unusual requirements, and those are rare.
 
 For your Root CA and Issuing CA, RSA-4096 is your answer. It is the most compatible, within the ADCS GUI limit, and appropriately sized for the threat model. Spend your energy on PQC planning instead.
 
@@ -51,6 +51,8 @@ Here is what I know from Gradenegger's research and direct experience:
 **VMware Workspace One:** Not supported. If you are deploying ECC issuing CA certificates in an environment with Workspace One for MDM, you are looking at enrollment failures.
 
 **Windows Defender Application Control (WDAC):** Not supported. Microsoft's own documentation explicitly states that ECDSA is not supported in WDAC policy signing. This one is easy to miss because WDAC is often managed by a separate team from PKI.
+
+All four of these are cases I have seen break in real enterprise environments. Not edge cases. Not lab issues. Production incidents with production impact.
 
 **Domain Controller certificates:** Technically supported, but with client-side compatibility caveats. Older Windows clients may have issues. If your environment spans Windows Server 2016 and Windows 10 1903, test this thoroughly before deploying.
 
@@ -139,6 +141,8 @@ Gradenegger documented this in detail. The policy module simply does not inspect
 The practical implication: if you deploy ECC templates expecting strong key algorithm enforcement, and a misconfigured client or a legacy application submits an RSA key, you get a certificate issued against your security policy with no error and no audit event that flags the mismatch.
 
 The fix is TameMyCerts. It is the only ADCS extension I am aware of that enforces key algorithm validation at issuance time. TameMyCerts can be configured to reject certificate requests where the submitted key does not match the template's configured algorithm and key size. This closes the gap.
+
+This is exactly why Part 2 argued for layering hard constraints in the CA certificate with soft constraints via TameMyCerts. The native ADCS policy module leaves gaps like this one. Hard constraints (Name Constraints, EKU Qualified Subordination) are your last line of defense. TameMyCerts is where you enforce the rules that ADCS should have enforced natively.
 
 If you care about strong key algorithm enforcement, TameMyCerts is not optional. It is the enforcement layer that the ADCS policy module should have provided natively.
 
